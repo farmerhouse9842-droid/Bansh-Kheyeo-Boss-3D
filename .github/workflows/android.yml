@@ -15,7 +15,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Install Android SDK
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
@@ -24,8 +24,9 @@ jobs:
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
           SDKMANAGER=$(find "$SDK/cmdline-tools" -name sdkmanager -type f | sort -V | tail -n 1)
           test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses > /dev/null || true
           "$SDKMANAGER" --sdk_root="$SDK" 'platform-tools' 'platforms;android-34' 'build-tools;34.0.0'
-      - name: Install Godot 4.3 and export templates
+      - name: Install Godot 4.3 and templates
         shell: bash
         run: |
           set -euo pipefail
@@ -37,7 +38,7 @@ jobs:
           mkdir -p /tmp/godot-templates "$HOME/.local/share/godot/export_templates/4.3.stable"
           unzip -q /tmp/templates.tpz -d /tmp/godot-templates
           cp /tmp/godot-templates/templates/* "$HOME/.local/share/godot/export_templates/4.3.stable/"
-      - name: Configure Android editor settings
+      - name: Configure Android export
         shell: bash
         run: |
           set -euo pipefail
@@ -45,47 +46,60 @@ jobs:
           KEY="$RUNNER_TEMP/bansh-debug.keystore"
           keytool -genkeypair -noprompt -keystore "$KEY" -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'
           echo "BASH_KEY=$KEY" >> "$GITHUB_ENV"
-          cat > ci_config.gd <<'GDSCRIPT'
-          extends SceneTree
-          func _initialize() -> void:
-              var settings = EditorInterface.get_editor_settings()
-              settings.set_setting("export/android/android_sdk_path", OS.get_environment("ANDROID_HOME"))
-              settings.set_setting("export/android/java_sdk_path", OS.get_environment("JAVA_HOME"))
-              settings.set_setting("export/android/debug_keystore", OS.get_environment("BASH_KEY"))
-              settings.set_setting("export/android/debug_keystore_user", "androiddebugkey")
-              settings.set_setting("export/android/debug_keystore_pass", "android")
-              print("ANDROID_EDITOR_SETTINGS_CONFIGURED")
-              quit()
-          GDSCRIPT
-          timeout 90s godot --headless --editor --path . --script res://ci_config.gd 2>&1 | tee build/config.log
-          grep -q ANDROID_EDITOR_SETTINGS_CONFIGURED build/config.log
-          rm ci_config.gd
-          python3 - <<'PYSET'
+          # Allow Godot to generate a real editor settings file first.
+          timeout 60s godot --headless --editor --path . --quit > build/editor-init.log 2>&1
+          python3 - <<'PY'
           import os,re
           from pathlib import Path
-          p=Path('export_presets.cfg')
+          p=Path.home()/'.config/godot/editor_settings-4.tres'
+          if not p.exists():
+              raise SystemExit('Godot did not create editor_settings-4.tres')
           s=p.read_text()
-          for k,v in [('keystore/debug',os.environ['BASH_KEY']),('keystore/debug_user','androiddebugkey'),('keystore/debug_password','android')]:
-              pat=r'^'+re.escape(k)+r'\s*=.*$'
-              if not re.search(pat,s,re.M): raise SystemExit('Missing '+k)
-              s=re.sub(pat,lambda _:k+'="'+v+'"',s,count=1,flags=re.M)
+          if '[resource]' not in s:
+              raise SystemExit('Unexpected editor settings format')
+          settings={
+              'export/android/android_sdk_path':os.environ['ANDROID_HOME'],
+              'export/android/java_sdk_path':os.environ['JAVA_HOME'],
+              'export/android/debug_keystore':os.environ['BASH_KEY'],
+              'export/android/debug_keystore_user':'androiddebugkey',
+              'export/android/debug_keystore_pass':'android',
+          }
+          for key,val in settings.items():
+              line=key+' = '+repr(val).replace("'",'"')
+              pattern=r'^'+re.escape(key)+r'\s*=.*$'
+              if re.search(pattern,s,re.M):
+                  s=re.sub(pattern,lambda m:line,s,count=1,flags=re.M)
+              else:
+                  s=s.replace('[resource]','[resource]\n'+line,1)
           p.write_text(s)
-          PYSET
-      - name: Verify configuration and import
+          preset=Path('export_presets.cfg')
+          if not preset.exists(): raise SystemExit('Missing export_presets.cfg')
+          data=preset.read_text()
+          if 'name="Android"' not in data or 'platform="Android"' not in data:
+              raise SystemExit('Android export preset not found')
+          for key,val in {'keystore/debug':os.environ['BASH_KEY'], 'keystore/debug_user':'androiddebugkey','keystore/debug_password':'android'}.items():
+              line=key+'="'+val+'"'
+              pat=r'^'+re.escape(key)+r'\s*=.*$'
+              if re.search(pat,data,re.M): data=re.sub(pat,lambda m:line,data,count=1,flags=re.M)
+              else: data=data.replace('[preset.0.options]','[preset.0.options]\n'+line,1)
+          preset.write_text(data)
+          print('Editor settings and export preset prepared')
+          PY
+          test -s "$HOME/.local/share/godot/export_templates/4.3.stable/android_debug.apk"
+          test -s "$ANDROID_HOME/platforms/android-34/android.jar"
+      - name: Import project
         shell: bash
         run: |
           set -euo pipefail
           test -f project.godot
           test -f main.tscn
           test -f scripts/main.gd
-          test -s "$HOME/.local/share/godot/export_templates/4.3.stable/android_debug.apk"
-          test -f "$ANDROID_HOME/platforms/android-34/android.jar"
           timeout 150s godot --headless --editor --path . --import 2>&1 | tee build/import.log
       - name: Export debug APK
         shell: bash
         run: |
           set -euo pipefail
-          timeout 240s godot --headless --editor --verbose --path . --export-debug Android build/Bansh-Boss-v0.1.apk 2>&1 | tee build/export.log
+          timeout 240s godot --headless --verbose --path . --export-debug Android build/Bansh-Boss-v0.1.apk 2>&1 | tee build/export.log
           test -s build/Bansh-Boss-v0.1.apk
       - name: Upload logs
         if: always()

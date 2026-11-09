@@ -1,4 +1,4 @@
-name: Bansh Kheyeo Boss 3D v0.1 APK
+name: Bansh Kheyeo Boss 3D v0.1 Diagnostic APK
 'on':
   workflow_dispatch:
   push:
@@ -57,10 +57,9 @@ jobs:
           }
           for key, value in values.items():
               pattern = r'^' + re.escape(key) + r'\s*=.*$'
-              if re.search(pattern, s, flags=re.M):
-                  s = re.sub(pattern, lambda m: key + '="' + value + '"', s, count=1, flags=re.M)
-              else:
+              if not re.search(pattern, s, flags=re.M):
                   raise SystemExit('Missing export preset key: ' + key)
+              s = re.sub(pattern, lambda m: key + '="' + value + '"', s, count=1, flags=re.M)
           p.write_text(s)
           PY
           mkdir -p "$HOME/.config/godot"
@@ -74,27 +73,50 @@ jobs:
           export/android/debug_keystore_user = "androiddebugkey"
           export/android/debug_keystore_pass = "android"
           SETTINGS
+      - name: Diagnose export configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '=== Godot version ==='
+            godot --headless --version
+            echo '=== Required files ==='
+            for f in project.godot main.tscn scripts/main.gd export_presets.cfg; do test -f "$f" && echo "OK $f" || echo "MISSING $f"; done
+            echo '=== Android SDK ==='
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            echo "JAVA_HOME=$JAVA_HOME"
+            test -f "$ANDROID_HOME/platforms/android-34/android.jar" && echo 'Platform 34 OK'
+            test -f "$ANDROID_HOME/build-tools/34.0.0/aapt2" && echo 'Build tools OK'
+            test -f "$JAVA_HOME/bin/javac" && echo 'JDK OK'
+            test -f "$HOME/.local/share/godot/export_templates/4.3.stable/android_debug.apk" && echo 'Android template OK'
+            test -f "$RUNNER_TEMP/debug.keystore" && echo 'Debug keystore OK'
+            echo '=== Export preset (secrets redacted) ==='
+            sed -E '/^keystore\/debug_password=/s/=.*/="[REDACTED]"/; /^keystore\/debug=/s/=.*/="[PRESENT]"/' export_presets.cfg
+            echo '=== Editor settings (password redacted) ==='
+            sed -E '/^export\/android\/debug_keystore_pass/s/=.*/= "[REDACTED]"/' "$HOME/.config/godot/editor_settings-4.tres"
+          } 2>&1 | tee build/diagnostic.log
       - name: Import game
         shell: bash
         run: |
           set -o pipefail
           timeout 150s godot --headless --editor --path . --import 2>&1 | tee build/import.log
-      - name: Build APK
+      - name: Build APK with verbose diagnostics
         shell: bash
         run: |
           set -o pipefail
-          timeout 240s godot --headless --path . --export-debug Android build/BASH-v0.1-debug.apk 2>&1 | tee build/export.log
+          timeout 240s godot --headless --verbose --path . --export-debug Android build/BASH-v0.1-debug.apk 2>&1 | tee build/export.log
           test -s build/BASH-v0.1-debug.apk
-      - name: Upload logs
+      - name: Upload diagnostic logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: BASH-v01-logs
+          name: BASH-v01-diagnostic-logs
           path: build/*.log
-          if-no-files-found: ignore
+          if-no-files-found: warn
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: BASH-v01-APK
           path: build/BASH-v0.1-debug.apk
+          if-no-files-found: error

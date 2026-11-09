@@ -14,7 +14,7 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 [application]
 
-config/name="বাঁশ খেয়েও বস 3D v0.4 Graphics Test"
+config/name="বাঁশ খেয়েও বস 3D v0.5 Camera Test"
 run/main_scene="res://scenes/main.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 

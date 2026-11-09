@@ -1,4 +1,4 @@
-name: Bansh Boss v0.1 Android Build
+name: Bansh Boss Android APK (test)
 on:
   workflow_dispatch:
   push:
@@ -15,89 +15,73 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Android SDK packages
+      - name: Install Android packages
         shell: bash
         run: |
           set -euo pipefail
-          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
-          SDKMANAGER=$(find "$SDK/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)
-          test -n "$SDKMANAGER"
-          "$SDKMANAGER" --sdk_root="$SDK" 'platform-tools' 'platforms;android-34' 'build-tools;34.0.0'
-      - name: Godot 4.3 and templates
+          TOOL=$(find "$SDK/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)
+          test -n "$TOOL"
+          yes | "$TOOL" --sdk_root="$SDK" --licenses > /dev/null || true
+          "$TOOL" --sdk_root="$SDK" 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Install matching Godot and templates
         shell: bash
         run: |
           set -euo pipefail
-          BASE=https://github.com/godotengine/godot-builds/releases/download/4.3-stable
-          curl -fLsS "$BASE/Godot_v4.3-stable_linux.x86_64.zip" -o /tmp/godot.zip
+          VERSION=4.7.2-stable
+          BASE="https://github.com/godotengine/godot-builds/releases/download/$VERSION"
+          curl -fL --retry 3 "$BASE/Godot_v${VERSION}_linux.x86_64.zip" -o /tmp/godot.zip
           unzip -q /tmp/godot.zip -d /tmp
-          sudo install -m 755 /tmp/Godot_v4.3-stable_linux.x86_64 /usr/local/bin/godot
-          curl -fLsS "$BASE/Godot_v4.3-stable_export_templates.tpz" -o /tmp/templates.tpz
-          mkdir -p /tmp/godot-templates "$HOME/.local/share/godot/export_templates/4.3.stable"
-          unzip -q /tmp/templates.tpz -d /tmp/godot-templates
-          cp /tmp/godot-templates/templates/* "$HOME/.local/share/godot/export_templates/4.3.stable/"
-          test -s "$HOME/.local/share/godot/export_templates/4.3.stable/android_debug.apk"
-      - name: Configure Android export without editor scripts
+          sudo install -m 755 "/tmp/Godot_v${VERSION}_linux.x86_64" /usr/local/bin/godot
+          curl -fL --retry 3 "$BASE/Godot_v${VERSION}_export_templates.tpz" -o /tmp/templates.tpz
+          mkdir -p "$HOME/.local/share/godot/export_templates/4.7.2.stable" /tmp/tpl
+          unzip -q /tmp/templates.tpz -d /tmp/tpl
+          cp /tmp/tpl/templates/* "$HOME/.local/share/godot/export_templates/4.7.2.stable/"
+          godot --headless --version
+      - name: Configure debug signing and Android paths
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p build "$HOME/.config/godot"
-          KEY="$RUNNER_TEMP/bansh-debug.keystore"
-          keytool -genkeypair -noprompt -keystore "$KEY" -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'
-          export BASH_KEY="$KEY"
+          mkdir -p build "$HOME/.android" "$HOME/.config/godot"
+          keytool -genkeypair -noprompt -keystore "$HOME/.android/debug.keystore" -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'
           python3 - <<'PYSET'
-          import os, re
+          import os,re
           from pathlib import Path
-          def quoted(value):
-              return '"' + value.replace('\\','\\\\').replace('"','\\"') + '"'
-          settings = Path.home()/'.config/godot/editor_settings-4.tres'
-          entries = {
-            'export/android/android_sdk_path': os.environ['ANDROID_HOME'],
-            'export/android/java_sdk_path': os.environ['JAVA_HOME'],
-            'export/android/debug_keystore': os.environ['BASH_KEY'],
-            'export/android/debug_keystore_user': 'androiddebugkey',
-            'export/android/debug_keystore_pass': 'android',
-          }
-          settings.write_text('[gd_resource type="EditorSettings" format=3]\n\n[resource]\n' + ''.join(k+' = '+quoted(v)+'\n' for k,v in entries.items()))
-          preset = Path('export_presets.cfg')
-          data = preset.read_text()
-          for key,value in [('keystore/debug',os.environ['BASH_KEY']),('keystore/debug_user','androiddebugkey'),('keystore/debug_password','android')]:
-              pat = r'^'+re.escape(key)+r'\s*=.*$'
-              if not re.search(pat,data,re.M):
-                  raise SystemExit('Missing export preset key: '+key)
-              data=re.sub(pat,lambda m:key+'='+quoted(value),data,count=1,flags=re.M)
-          preset.write_text(data)
-          print('Configured Android editor settings and debug keystore')
+          p=Path.home()/'.config/godot/editor_settings-4.tres'
+          p.write_text('[gd_resource type="EditorSettings" format=3]\n\n[resource]\n'+ '\n'.join(f'{k} = "{v}"' for k,v in {
+          'export/android/android_sdk_path':os.environ['ANDROID_HOME'],
+          'export/android/java_sdk_path':os.environ['JAVA_HOME'],
+          'export/android/debug_keystore':str(Path.home()/'.android/debug.keystore'),
+          'export/android/debug_keystore_user':'androiddebugkey',
+          'export/android/debug_keystore_pass':'android'}.items())+'\n')
+          print('Editor settings file:',p)
           PYSET
-          test -s "$HOME/.config/godot/editor_settings-4.tres"
-          test -s "$ANDROID_HOME/platforms/android-34/android.jar"
-          test -x "$JAVA_HOME/bin/java"
+      - name: Validate project and import
+        shell: bash
+        run: |
+          set -euo pipefail
           test -f project.godot
-          test -f main.tscn
+          test -f scenes/main.tscn
           test -f scripts/main.gd
-      - name: Import project
-        shell: bash
-        run: |
-          set -o pipefail
+          grep -q 'name="Android"' export_presets.cfg
           timeout 150s godot --headless --editor --path . --import 2>&1 | tee build/import.log
-      - name: Export Android debug APK
+      - name: Export Android APK
         shell: bash
         run: |
-          set -o pipefail
-          timeout 240s godot --headless --path . --verbose --export-debug Android build/Bansh-Boss-v0.1.apk 2>&1 | tee build/export.log
-          test -s build/Bansh-Boss-v0.1.apk
-      - name: Upload diagnostic logs
+          set -euo pipefail
+          timeout 240s godot --headless --path . --export-debug Android build/Bansh-Boss-v0.4.apk 2>&1 | tee build/export.log
+          test -s build/Bansh-Boss-v0.4.apk
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Bansh-v01-diagnostic-logs
+          name: Bansh-v04-build-logs
           path: build/*.log
           if-no-files-found: ignore
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Bansh-v01-APK
-          path: build/Bansh-Boss-v0.1.apk
-          if-no-files-found: error
+          name: Bansh-Boss-v0.4-APK
+          path: build/Bansh-Boss-v0.4.apk

@@ -47,8 +47,8 @@ func _ready() -> void:
     _build_boss_character()
 
     var camera := Camera3D.new()
-    camera.position = Vector3(0, 6.8, 12.5)
-    camera.rotation_degrees.x = -24
+    camera.position = Vector3(0, 5.2, 9.0)
+    camera.rotation_degrees.x = -22
     camera.current = true
     player.add_child(camera)
 
@@ -259,6 +259,21 @@ func _create_village_scenery() -> void:
     _scenery_box(Vector3(3.1, 2.2, 2.7), Vector3(10.5, 1.1, -9.5), Color(0.71, 0.53, 0.32))
     _scenery_box(Vector3(3.7, 0.35, 3.3), Vector3(10.5, 2.42, -9.5), Color(0.43, 0.18, 0.11), 0.0)
     _scenery_box(Vector3(0.8, 1.5, 0.055), Vector3(10.5, 0.75, -8.12), Color(0.27, 0.17, 0.10))
+    # Small decorative stones outside the main walking corridor.
+    # They have no collision shapes and cannot block movement.
+    for i in range(24):
+        var side := -1.0 if i % 2 == 0 else 1.0
+        var stone_x := side * rng.randf_range(2.0, 6.8)
+        var stone_z := rng.randf_range(-12.0, 10.0)
+        var stone := MeshInstance3D.new()
+        var stone_mesh := SphereMesh.new()
+        stone_mesh.radius = 0.18
+        stone_mesh.height = 0.24
+        stone.mesh = stone_mesh
+        stone.position = Vector3(stone_x, 0.09, stone_z)
+        stone.scale = Vector3(rng.randf_range(0.75, 1.5), 0.6, rng.randf_range(0.75, 1.4))
+        stone.material_override = _mat(Color(0.45, 0.44, 0.40))
+        add_child(stone)
     # Bamboo course keeps its original positions and collision checks.
 
 func _create_controls() -> void:

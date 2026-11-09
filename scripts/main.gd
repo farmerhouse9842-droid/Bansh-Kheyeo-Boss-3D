@@ -12,6 +12,23 @@ var knocked_down := false
 var knock_time := 0.0
 var hit_cooldown := 0.0
 var message_label: Label
+# v0.6: ten short courses, coins, checkpoints and a pause menu.
+var current_level := 1
+var coins := 0
+var score := 0
+var paused_game := false
+var anim_clock := 0.0
+var level_label: Label
+var score_label: Label
+var pause_button: Button
+var restart_button: Button
+var next_button: Button
+var coin_nodes: Array[Node3D] = []
+var bamboo_nodes: Array[Node3D] = []
+var checkpoint_z := 0.0
+var finish_z := -12.5
+var saved_level := 1
+
 
 func _ready() -> void:
     var ground := StaticBody3D.new()
@@ -64,6 +81,9 @@ func _ready() -> void:
     _create_bamboo()
     _create_village_scenery()
     _create_controls()
+    _create_hud()
+    _load_progress()
+    _start_level(saved_level)
 
 # A stylized approximation based on the approved reference design.
 # This is real 3D geometry, but not a photo-scanned face or rigged model.
@@ -125,6 +145,9 @@ func _build_boss_character() -> void:
 func _physics_process(delta: float) -> void:
     if player == null:
         return
+    if paused_game:
+        player.velocity = Vector3.ZERO
+        return
     hit_cooldown = maxf(0.0, hit_cooldown - delta)
     if knocked_down:
         knock_time -= delta
@@ -157,6 +180,8 @@ func _physics_process(delta: float) -> void:
         player.velocity.y = jump_speed
     jump_requested = false
     player.move_and_slide()
+    _animate_walk(delta, axis)
+    _check_coins_and_finish()
     # Subtle motion while walking; keep fall rotation untouched.
     if axis.length() > 0.1 and player.is_on_floor():
         avatar.rotation_degrees.y = lerpf(avatar.rotation_degrees.y, -axis.x * 12.0, minf(delta * 8.0, 1.0))
@@ -168,7 +193,10 @@ func _physics_process(delta: float) -> void:
                 knocked_down = true
                 knock_time = 1.8
                 hit_cooldown = 2.5
+                message_label.text = "BASH! GET UP, BOSS!"
                 message_label.visible = true
+                score = maxi(0, score - 5)
+                _update_hud()
                 break
 
 func _create_bamboo() -> void:
@@ -185,6 +213,7 @@ func _create_bamboo() -> void:
         mat.albedo_color = Color(0.27, 0.65, 0.16)
         pole.material_override = mat
         add_child(pole)
+        bamboo_nodes.append(pole)
         for y in [0.55, 1.4, 2.25]:
             var ring := MeshInstance3D.new()
             var ring_mesh := CylinderMesh.new()
@@ -197,6 +226,7 @@ func _create_bamboo() -> void:
             ring_mat.albedo_color = Color(0.14, 0.39, 0.09)
             ring.material_override = ring_mat
             add_child(ring)
+            bamboo_nodes.append(ring)
 
 
 # Lightweight decorative geometry. No new collisions or external assets.
@@ -315,3 +345,162 @@ func _on_direction(direction: Vector2, pressed: bool) -> void:
     else:
         move_axis -= direction
     move_axis = Vector2(clampf(move_axis.x, -1.0, 1.0), clampf(move_axis.y, -1.0, 1.0))
+
+
+# v0.6 systems: all geometry is generated in GDScript, no external assets.
+func _create_hud() -> void:
+    var hud := CanvasLayer.new()
+    hud.name = "GameHUD"
+    add_child(hud)
+    level_label = Label.new()
+    level_label.position = Vector2(16, 22)
+    level_label.add_theme_font_size_override("font_size", 23)
+    hud.add_child(level_label)
+    score_label = Label.new()
+    score_label.position = Vector2(16, 54)
+    score_label.add_theme_font_size_override("font_size", 19)
+    hud.add_child(score_label)
+    pause_button = Button.new()
+    pause_button.text = "PAUSE"
+    pause_button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+    pause_button.offset_left = -122
+    pause_button.offset_right = -12
+    pause_button.offset_top = 18
+    pause_button.offset_bottom = 70
+    pause_button.pressed.connect(_toggle_pause)
+    hud.add_child(pause_button)
+    restart_button = Button.new()
+    restart_button.text = "RESTART"
+    restart_button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+    restart_button.offset_left = -122
+    restart_button.offset_right = -12
+    restart_button.offset_top = 76
+    restart_button.offset_bottom = 126
+    restart_button.pressed.connect(_restart_level)
+    hud.add_child(restart_button)
+    next_button = Button.new()
+    next_button.text = "NEXT LEVEL"
+    next_button.set_anchors_preset(Control.PRESET_CENTER)
+    next_button.offset_left = -110
+    next_button.offset_right = 110
+    next_button.offset_top = -40
+    next_button.offset_bottom = 30
+    next_button.visible = false
+    next_button.pressed.connect(_next_level)
+    hud.add_child(next_button)
+    _update_hud()
+
+func _update_hud() -> void:
+    if level_label != null:
+        level_label.text = "LEVEL %d / 10" % current_level
+    if score_label != null:
+        score_label.text = "COINS %d    SCORE %d" % [coins, score]
+
+func _toggle_pause() -> void:
+    paused_game = not paused_game
+    pause_button.text = "RESUME" if paused_game else "PAUSE"
+
+func _restart_level() -> void:
+    paused_game = false
+    pause_button.text = "PAUSE"
+    _start_level(current_level)
+
+func _next_level() -> void:
+    if current_level < 10:
+        _start_level(current_level + 1)
+    else:
+        _start_level(1)
+
+func _start_level(level: int) -> void:
+    current_level = clampi(level, 1, 10)
+    saved_level = current_level
+    _save_progress()
+    paused_game = false
+    knocked_down = false
+    knock_time = 0.0
+    hit_cooldown = 1.0
+    move_axis = Vector2.ZERO
+    jump_requested = false
+    player.position = Vector3(0, 1.3, 0)
+    player.velocity = Vector3.ZERO
+    avatar.rotation_degrees = Vector3.ZERO
+    message_label.visible = false
+    next_button.visible = false
+    pause_button.text = "PAUSE"
+    # Rearrange the existing three bamboo obstacles for each level.
+    bamboo_positions.clear()
+    for i in range(3):
+        var z := -4.0 - float(i) * 3.1
+        var x := sin(float(current_level * 3 + i * 5)) * 1.65
+        var pos := Vector3(x, 0, z)
+        bamboo_positions.append(pos)
+        # Four nodes per bamboo: pole and three rings.
+        for j in range(4):
+            var idx := i * 4 + j
+            if idx < bamboo_nodes.size():
+                var node := bamboo_nodes[idx]
+                var y: float = 1.4 if j == 0 else [0.55, 1.4, 2.25][j - 1]
+                node.position = pos + Vector3(0, y, 0)
+    for coin in coin_nodes:
+        coin.queue_free()
+    coin_nodes.clear()
+    for i in range(5):
+        var z := -2.0 - float(i) * 2.25
+        var x := cos(float(current_level + i * 2)) * 0.72
+        var coin := MeshInstance3D.new()
+        var mesh := CylinderMesh.new()
+        mesh.top_radius = 0.24
+        mesh.bottom_radius = 0.24
+        mesh.height = 0.075
+        coin.mesh = mesh
+        coin.rotation_degrees.x = 90
+        coin.position = Vector3(x, 1.05, z)
+        coin.material_override = _mat(Color(1.0, 0.77, 0.12))
+        add_child(coin)
+        coin_nodes.append(coin)
+    _update_hud()
+
+func _check_coins_and_finish() -> void:
+    for coin in coin_nodes:
+        if not is_instance_valid(coin) or not coin.visible:
+            continue
+        coin.rotation_degrees.z += 2.0
+        if player.global_position.distance_to(coin.global_position) < 1.05:
+            coin.visible = false
+            coins += 1
+            score += 10
+            _update_hud()
+    if player.global_position.z < finish_z and not next_button.visible:
+        score += 100
+        next_button.text = "FINISH! NEXT LEVEL" if current_level < 10 else "YOU WON! REPLAY"
+        next_button.visible = true
+        paused_game = true
+        _update_hud()
+
+func _animate_walk(delta: float, axis: Vector2) -> void:
+    var moving := axis.length() > 0.1 and player.is_on_floor()
+    if moving:
+        anim_clock += delta * 9.0
+    else:
+        anim_clock = lerpf(anim_clock, 0.0, minf(delta * 6.0, 1.0))
+    var swing := sin(anim_clock) * (17.0 if moving else 0.0)
+    for child in avatar.get_children():
+        if child.name == "Jeans leg -1" or child.name == "White shoe -1":
+            child.rotation_degrees.x = swing
+        elif child.name == "Jeans leg 1" or child.name == "White shoe 1":
+            child.rotation_degrees.x = -swing
+        elif child.name == "Forearm -1" or child.name == "Blue sleeve -1":
+            child.rotation_degrees.x = -swing * 0.7
+        elif child.name == "Forearm 1" or child.name == "Blue sleeve 1":
+            child.rotation_degrees.x = swing * 0.7
+
+func _save_progress() -> void:
+    var file := FileAccess.open("user://bansh_progress.save", FileAccess.WRITE)
+    if file != null:
+        file.store_32(saved_level)
+
+func _load_progress() -> void:
+    if FileAccess.file_exists("user://bansh_progress.save"):
+        var file := FileAccess.open("user://bansh_progress.save", FileAccess.READ)
+        if file != null:
+            saved_level = clampi(int(file.get_32()), 1, 10)

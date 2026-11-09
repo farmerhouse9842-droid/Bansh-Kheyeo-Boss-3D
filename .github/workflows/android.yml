@@ -1,5 +1,5 @@
 name: Bansh Boss v0.1 Android
-on:
+'on':
   workflow_dispatch:
   push:
     branches: [main]
@@ -25,7 +25,7 @@ jobs:
           SDKMANAGER=$(find "$SDK/cmdline-tools" -name sdkmanager -type f | sort -V | tail -n 1)
           test -n "$SDKMANAGER"
           "$SDKMANAGER" --sdk_root="$SDK" 'platform-tools' 'platforms;android-34' 'build-tools;34.0.0'
-      - name: Install Godot 4.3 and templates
+      - name: Install Godot 4.3 and export templates
         shell: bash
         run: |
           set -euo pipefail
@@ -37,7 +37,7 @@ jobs:
           mkdir -p /tmp/godot-templates "$HOME/.local/share/godot/export_templates/4.3.stable"
           unzip -q /tmp/templates.tpz -d /tmp/godot-templates
           cp /tmp/godot-templates/templates/* "$HOME/.local/share/godot/export_templates/4.3.stable/"
-      - name: Configure Godot via its editor API
+      - name: Configure Android editor settings
         shell: bash
         run: |
           set -euo pipefail
@@ -54,12 +54,11 @@ jobs:
               settings.set_setting("export/android/debug_keystore", OS.get_environment("BASH_KEY"))
               settings.set_setting("export/android/debug_keystore_user", "androiddebugkey")
               settings.set_setting("export/android/debug_keystore_pass", "android")
-              settings.save()
-              print("ANDROID_EDITOR_SETTINGS_SAVED")
+              print("ANDROID_EDITOR_SETTINGS_CONFIGURED")
               quit()
           GDSCRIPT
           timeout 90s godot --headless --editor --path . --script res://ci_config.gd 2>&1 | tee build/config.log
-          grep -q ANDROID_EDITOR_SETTINGS_SAVED build/config.log
+          grep -q ANDROID_EDITOR_SETTINGS_CONFIGURED build/config.log
           rm ci_config.gd
           python3 - <<'PYSET'
           import os,re
